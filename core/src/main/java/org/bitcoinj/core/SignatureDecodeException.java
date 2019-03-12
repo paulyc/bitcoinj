@@ -1,6 +1,6 @@
 /*
  * Copyright by the original author or authors.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,11 +14,22 @@
  * limitations under the License.
  */
 
-package org.bitcoinj.core.listeners;
+package org.bitcoinj.core;
 
-/**
- * Old interface for backwards compatibility. Implement the more specific interfaces instead.
- */
-@Deprecated
-public interface BlockChainListener extends NewBestBlockListener, TransactionReceivedInBlockListener, ReorganizeListener {
+public class SignatureDecodeException extends Exception {
+    public SignatureDecodeException() {
+        super();
+    }
+
+    public SignatureDecodeException(String message) {
+        super(message);
+    }
+
+    public SignatureDecodeException(Throwable cause) {
+        super(cause);
+    }
+
+    public SignatureDecodeException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

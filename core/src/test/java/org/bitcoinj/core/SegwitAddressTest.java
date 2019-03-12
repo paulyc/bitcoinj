@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Andreas Schildbach
+ * Copyright by the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -108,7 +108,7 @@ public class SegwitAddressTest {
             if (valid.expectedWitnessVersion == 0) {
                 Script expectedScriptPubKey = new Script(Utils.HEX.decode(valid.expectedScriptPubKey));
                 assertEquals(address, SegwitAddress.fromHash(valid.expectedParams,
-                        ScriptPattern.extractHashFromPayToWitnessHash(expectedScriptPubKey)));
+                        ScriptPattern.extractHashFromP2WH(expectedScriptPubKey)));
             }
             assertEquals(valid.expectedWitnessVersion, address.getWitnessVersion());
         }

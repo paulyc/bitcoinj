@@ -38,7 +38,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.KeyParameter;
 
 import java.io.InputStream;
 import java.math.BigInteger;
@@ -410,8 +410,8 @@ public class ECKeyTest {
         String base58 = key.getPrivateKeyEncoded(UNITTEST).toString();
         ECKey key2 = DumpedPrivateKey.fromBase58(UNITTEST, base58).getKey();
         assertTrue(key2.isCompressed());
-        assertTrue(Arrays.equals(key.getPrivKeyBytes(), key2.getPrivKeyBytes()));
-        assertTrue(Arrays.equals(key.getPubKey(), key2.getPubKey()));
+        assertArrayEquals(key.getPrivKeyBytes(), key2.getPrivKeyBytes());
+        assertArrayEquals(key.getPubKey(), key2.getPubKey());
     }
 
     @Test

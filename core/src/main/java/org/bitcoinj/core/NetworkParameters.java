@@ -81,8 +81,10 @@ public abstract class NetworkParameters {
     protected int interval;
     protected int targetTimespan;
     protected byte[] alertSigningKey;
-    protected int bip32HeaderPub;
-    protected int bip32HeaderPriv;
+    protected int bip32HeaderP2PKHpub;
+    protected int bip32HeaderP2PKHpriv;
+    protected int bip32HeaderP2WPKHpub;
+    protected int bip32HeaderP2WPKHpriv;
 
     /** Used to check majorities for block version upgrade */
     protected int majorityEnforceBlockUpgrade;
@@ -155,36 +157,6 @@ public abstract class NetworkParameters {
      * The maximum money to be generated
      */
     public static final Coin MAX_MONEY = COIN.multiply(MAX_COINS);
-
-    /** Alias for TestNet3Params.get(), use that instead. */
-    @Deprecated
-    public static NetworkParameters testNet() {
-        return TestNet3Params.get();
-    }
-
-    /** Alias for TestNet3Params.get(), use that instead. */
-    @Deprecated
-    public static NetworkParameters testNet3() {
-        return TestNet3Params.get();
-    }
-
-    /** Alias for MainNetParams.get(), use that instead */
-    @Deprecated
-    public static NetworkParameters prodNet() {
-        return MainNetParams.get();
-    }
-
-    /** Returns a testnet params modified to allow any difficulty target. */
-    @Deprecated
-    public static NetworkParameters unitTests() {
-        return UnitTestParams.get();
-    }
-
-    /** Returns a standard regression test params (similar to unitTests) */
-    @Deprecated
-    public static NetworkParameters regTests() {
-        return RegTestParams.get();
-    }
 
     /**
      * A Java package style string acting as unique ID for these parameters
@@ -370,16 +342,25 @@ public abstract class NetworkParameters {
         return alertSigningKey;
     }
 
-    /** Returns the 4 byte header for BIP32 (HD) wallet - public key part. */
-    public int getBip32HeaderPub() {
-        return bip32HeaderPub;
+    /** Returns the 4 byte header for BIP32 wallet P2PKH - public key part. */
+    public int getBip32HeaderP2PKHpub() {
+        return bip32HeaderP2PKHpub;
     }
 
-    /** Returns the 4 byte header for BIP32 (HD) wallet - private key part. */
-    public int getBip32HeaderPriv() {
-        return bip32HeaderPriv;
+    /** Returns the 4 byte header for BIP32 wallet P2PKH - private key part. */
+    public int getBip32HeaderP2PKHpriv() {
+        return bip32HeaderP2PKHpriv;
     }
 
+    /** Returns the 4 byte header for BIP32 wallet P2WPKH - public key part. */
+    public int getBip32HeaderP2WPKHpub() {
+        return bip32HeaderP2WPKHpub;
+    }
+
+    /** Returns the 4 byte header for BIP32 wallet P2WPKH - private key part. */
+    public int getBip32HeaderP2WPKHpriv() {
+        return bip32HeaderP2WPKHpriv;
+    }
     /**
      * Returns the number of coins that will be produced in total, on this
      * network. Where not applicable, a very large number of coins is returned
@@ -516,7 +497,8 @@ public abstract class NetworkParameters {
     public static enum ProtocolVersion {
         MINIMUM(70000),
         PONG(60001),
-        BLOOM_FILTER(70000),
+        BLOOM_FILTER(70000), // BIP37
+        BLOOM_FILTER_BIP111(70011), // BIP111
         WITNESS_VERSION(70012),
         CURRENT(70012);
 

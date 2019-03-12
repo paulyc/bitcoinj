@@ -147,6 +147,17 @@ public class TransactionInput extends ChildMessage {
         this.value = null;
     }
 
+    /**
+     * Gets the index of this input in the parent transaction, or throws if this input is free standing. Iterates
+     * over the parents list to discover this.
+     */
+    public int getIndex() {
+        final int myIndex = getParentTransaction().getInputs().indexOf(this);
+        if (myIndex < 0)
+            throw new IllegalStateException("Input linked to wrong parent transaction?");
+        return myIndex;
+    }
+
     @Override
     protected void parse() throws ProtocolException {
         outpoint = new TransactionOutPoint(params, payload, cursor, this, serializer);
@@ -355,7 +366,7 @@ public class TransactionInput extends ChildMessage {
      * @return NO_SUCH_TX if transaction is not the prevtx, ALREADY_SPENT if there was a conflict, SUCCESS if not.
      */
     public ConnectionResult connect(Transaction transaction, ConnectMode mode) {
-        if (!transaction.getHash().equals(outpoint.getHash()))
+        if (!transaction.getTxId().equals(outpoint.getHash()))
             return ConnectionResult.NO_SUCH_TX;
         checkElementIndex((int) outpoint.getIndex(), transaction.getOutputs().size(), "Corrupt transaction");
         TransactionOutput out = transaction.getOutput((int) outpoint.getIndex());
@@ -457,14 +468,14 @@ public class TransactionInput extends ChildMessage {
      */
     public void verify(TransactionOutput output) throws VerificationException {
         if (output.parent != null) {
-            if (!getOutpoint().getHash().equals(output.getParentTransaction().getHash()))
+            if (!getOutpoint().getHash().equals(output.getParentTransaction().getTxId()))
                 throw new VerificationException("This input does not refer to the tx containing the output.");
             if (getOutpoint().getIndex() != output.getIndex())
                 throw new VerificationException("This input refers to a different output on the given tx.");
         }
         Script pubKey = output.getScriptPubKey();
-        int myIndex = getParentTransaction().getInputs().indexOf(this);
-        getScriptSig().correctlySpends(getParentTransaction(), myIndex, pubKey);
+        getScriptSig().correctlySpends(getParentTransaction(), getIndex(), getWitness(), getValue(), pubKey,
+                Script.ALL_VERIFY_FLAGS);
     }
 
     /**
@@ -497,7 +508,7 @@ public class TransactionInput extends ChildMessage {
      * The "IsStandard" rules control whether the default Bitcoin Core client blocks relay of a tx / refuses to mine it,
      * however, non-standard transactions can still be included in blocks and will be accepted as valid if so.</p>
      *
-     * <p>This method simply calls <tt>DefaultRiskAnalysis.isInputStandard(this)</tt>.</p>
+     * <p>This method simply calls {@code DefaultRiskAnalysis.isInputStandard(this)}.</p>
      */
     public DefaultRiskAnalysis.RuleViolation isStandard() {
         return DefaultRiskAnalysis.isInputStandard(this);

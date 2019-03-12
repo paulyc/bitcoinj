@@ -199,7 +199,7 @@ public class PeerGroup implements TransactionBroadcaster {
             // filter. In case (1), we need to retransmit the filter to the connected peers. In case (2), we don't
             // and shouldn't, we should just recalculate and cache the new filter for next time.
             for (TransactionOutput output : tx.getOutputs()) {
-                if (ScriptPattern.isPayToPubKey(output.getScriptPubKey()) && output.isMine(wallet)) {
+                if (ScriptPattern.isP2PK(output.getScriptPubKey()) && output.isMine(wallet)) {
                     if (tx.getConfidence().getConfidenceType() == TransactionConfidence.ConfidenceType.BUILDING)
                         recalculateFastCatchupAndFilter(FilterRecalculateMode.SEND_IF_CHANGED);
                     else
@@ -237,8 +237,7 @@ public class PeerGroup implements TransactionBroadcaster {
             final double target = bloomFilterMerger.getBloomFilterFPRate() * MAX_FP_RATE_INCREASE;
             if (rate > target) {
                 // TODO: Avoid hitting this path if the remote peer didn't acknowledge applying a new filter yet.
-                if (log.isDebugEnabled())
-                    log.debug("Force update Bloom filter due to high false positive rate ({} vs {})", rate, target);
+                log.info("Force update Bloom filter due to high false positive rate ({} vs {})", rate, target);
                 recalculateFastCatchupAndFilter(FilterRecalculateMode.FORCE_SEND_FOR_REFRESH);
             }
         }
@@ -502,7 +501,7 @@ public class PeerGroup implements TransactionBroadcaster {
                 retryTime = Math.max(retryTime, groupBackoff.getRetryTime());
                 if (retryTime > now) {
                     long delay = retryTime - now;
-                    log.info("Waiting {} msec before next connect attempt {}", delay, addrToTry == null ? "" : "to " + addrToTry);
+                    log.info("Waiting {} ms before next connect attempt {}", delay, addrToTry == null ? "" : "to " + addrToTry);
                     inactives.add(addrToTry);
                     executor.schedule(this, delay, TimeUnit.MILLISECONDS);
                     return;
@@ -629,32 +628,6 @@ public class PeerGroup implements TransactionBroadcaster {
         setUserAgent(name, version, null);
     }
 
-    /** Use the more specific listener methods instead */
-    @Deprecated @SuppressWarnings("deprecation")
-    public void addEventListener(AbstractPeerEventListener listener, Executor executor) {
-        addBlocksDownloadedEventListener(Threading.USER_THREAD, listener);
-        addChainDownloadStartedEventListener(Threading.USER_THREAD, listener);
-        addConnectedEventListener(Threading.USER_THREAD, listener);
-        addDisconnectedEventListener(Threading.USER_THREAD, listener);
-        addDiscoveredEventListener(Threading.USER_THREAD, listener);
-        addGetDataEventListener(Threading.USER_THREAD, listener);
-        addOnTransactionBroadcastListener(Threading.USER_THREAD, listener);
-        addPreMessageReceivedEventListener(Threading.USER_THREAD, listener);
-    }
-
-    /** Use the more specific listener methods instead */
-    @Deprecated @SuppressWarnings("deprecation")
-    public void addEventListener(AbstractPeerEventListener listener) {
-        addBlocksDownloadedEventListener(executor, listener);
-        addChainDownloadStartedEventListener(executor, listener);
-        addConnectedEventListener(executor, listener);
-        addDisconnectedEventListener(executor, listener);
-        addDiscoveredEventListener(executor, listener);
-        addGetDataEventListener(executor, listener);
-        addOnTransactionBroadcastListener(executor, listener);
-        addPreMessageReceivedEventListener(executor, listener);
-    }
-
     /** See {@link Peer#addBlocksDownloadedEventListener(BlocksDownloadedEventListener)} */
     public void addBlocksDownloadedEventListener(BlocksDownloadedEventListener listener) {
         addBlocksDownloadedEventListener(Threading.USER_THREAD, listener);
@@ -777,19 +750,6 @@ public class PeerGroup implements TransactionBroadcaster {
             peer.addPreMessageReceivedEventListener(executor, listener);
         for (Peer peer : getPendingPeers())
             peer.addPreMessageReceivedEventListener(executor, listener);
-    }
-
-    /** Use the more specific listener methods instead */
-    @Deprecated @SuppressWarnings("deprecation")
-    public void removeEventListener(AbstractPeerEventListener listener) {
-        removeBlocksDownloadedEventListener(listener);
-        removeChainDownloadStartedEventListener(listener);
-        removeConnectedEventListener(listener);
-        removeDisconnectedEventListener(listener);
-        removeDiscoveredEventListener(listener);
-        removeGetDataEventListener(listener);
-        removeOnTransactionBroadcastListener(listener);
-        removePreMessageReceivedEventListener(listener);
     }
 
     public boolean removeBlocksDownloadedEventListener(BlocksDownloadedEventListener listener) {
@@ -1083,6 +1043,8 @@ public class PeerGroup implements TransactionBroadcaster {
                 try {
                     log.info("Stopping ...");
                     Stopwatch watch = Stopwatch.createStarted();
+                    // The log output this creates can be useful.
+                    setDownloadPeer(null);
                     // Blocking close of all sockets.
                     channels.stopAsync();
                     channels.awaitTerminated();
@@ -1319,8 +1281,8 @@ public class PeerGroup implements TransactionBroadcaster {
     }
 
     /**
-     * Returns the number of currently connected peers. To be informed when this count changes, register a 
-     * {@link PeerConnectionEventListener} and use the onPeerConnected/onPeerDisconnected methods.
+     * Returns the number of currently connected peers. To be informed when this count changes, use
+     * {@link PeerConnectedEventListener#onPeerConnected} and {@link PeerDisconnectedEventListener#onPeerDisconnected}.
      */
     public int numConnectedPeers() {
         return peers.size();
@@ -1514,11 +1476,14 @@ public class PeerGroup implements TransactionBroadcaster {
             for (Wallet wallet : wallets)
                 peer.addWallet(wallet);
             if (downloadPeer == null) {
-                // Kick off chain download if we aren't already doing it.
-                setDownloadPeer(selectDownloadPeer(peers));
-                boolean shouldDownloadChain = downloadListener != null && chain != null;
-                if (shouldDownloadChain) {
-                    startBlockChainDownloadFromPeer(downloadPeer);
+                Peer newDownloadPeer = selectDownloadPeer(peers);
+                if (newDownloadPeer != null) {
+                    setDownloadPeer(newDownloadPeer);
+                    // Kick off chain download if we aren't already doing it.
+                    boolean shouldDownloadChain = downloadListener != null && chain != null;
+                    if (shouldDownloadChain) {
+                        startBlockChainDownloadFromPeer(downloadPeer);
+                    }
                 }
             }
             // Make sure the peer knows how to upload transactions that are requested from us.
@@ -1730,7 +1695,7 @@ public class PeerGroup implements TransactionBroadcaster {
     }
 
     @GuardedBy("lock") private int stallPeriodSeconds = 10;
-    @GuardedBy("lock") private int stallMinSpeedBytesSec = Block.HEADER_SIZE * 20;
+    @GuardedBy("lock") private int stallMinSpeedBytesSec = Block.HEADER_SIZE * 10;
 
     /**
      * Configures the stall speed: the speed at which a peer is considered to be serving us the block chain
@@ -1741,7 +1706,7 @@ public class PeerGroup implements TransactionBroadcaster {
      * avoid false stalls.
      *
      * @param periodSecs How many seconds the download speed must be below blocksPerSec, defaults to 10.
-     * @param bytesPerSecond Download speed (only blocks/txns count) must be consistently below this for a stall, defaults to the bandwidth required for 20 block headers per second.
+     * @param bytesPerSecond Download speed (only blocks/txns count) must be consistently below this for a stall, defaults to the bandwidth required for 10 block headers per second.
      */
     public void setStallThreshold(int periodSecs, int bytesPerSecond) {
         lock.lock();
@@ -1769,6 +1734,8 @@ public class PeerGroup implements TransactionBroadcaster {
         private int cursor;
 
         private boolean syncDone;
+
+        private final Logger log = LoggerFactory.getLogger(ChainDownloadSpeedCalculator.class);
 
         @Override
         public synchronized void onBlocksDownloaded(Peer peer, Block block, @Nullable FilteredBlock filteredBlock, int blocksLeft) {
@@ -1818,47 +1785,58 @@ public class PeerGroup implements TransactionBroadcaster {
                     warmupSeconds = 15;
                 }
 
-                boolean behindPeers = chain != null && chain.getBestChainHeight() < getMostCommonChainHeight();
-                if (!behindPeers)
+                int chainHeight = chain != null ? chain.getBestChainHeight() : -1;
+                int mostCommonChainHeight = getMostCommonChainHeight();
+                if (!syncDone && mostCommonChainHeight > 0 && chainHeight >= mostCommonChainHeight) {
+                    log.info("End of sync detected.");
                     syncDone = true;
+                }
+
                 if (!syncDone) {
-                    if (warmupSeconds < 0) {
-                        // Calculate the moving average.
-                        samples[cursor++] = bytesInLastSecond;
-                        if (cursor == samples.length) cursor = 0;
-                        long average = 0;
-                        for (long sample : samples) average += sample;
-                        average /= samples.length;
+                    // Calculate the moving average.
+                    samples[cursor++] = bytesInLastSecond;
+                    if (cursor == samples.length) cursor = 0;
+                    long average = 0;
+                    for (long sample : samples) average += sample;
+                    average /= samples.length;
 
-                        log.info(String.format(Locale.US, "%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, avg/last %.2f/%.2f kilobytes per sec (stall threshold <%.2f KB/sec for %d seconds)",
-                                blocksInLastSecond, txnsInLastSecond, origTxnsInLastSecond, average / 1024.0, bytesInLastSecond / 1024.0,
-                                minSpeedBytesPerSec / 1024.0, samples.length));
-
-                        if (average < minSpeedBytesPerSec && maxStalls > 0) {
-                            maxStalls--;
-                            if (maxStalls == 0) {
-                                // We could consider starting to drop the Bloom filtering FP rate at this point, because
-                                // we tried a bunch of peers and no matter what we don't seem to be able to go any faster.
-                                // This implies we're bandwidth bottlenecked and might want to start using bandwidth
-                                // more effectively. Of course if there's a MITM that is deliberately throttling us,
-                                // this is a good way to make us take away all the FPs from our Bloom filters ... but
-                                // as they don't give us a whole lot of privacy either way that's not inherently a big
-                                // deal.
-                                log.warn("This network seems to be slower than the requested stall threshold - won't do stall disconnects any more.");
-                            } else {
-                                Peer peer = getDownloadPeer();
-                                log.warn(String.format(Locale.US, "Chain download stalled: received %.2f KB/sec for %d seconds, require average of %.2f KB/sec, disconnecting %s", average / 1024.0, samples.length, minSpeedBytesPerSec / 1024.0, peer));
-                                peer.close();
-                                // Reset the sample buffer and give the next peer time to get going.
-                                samples = null;
-                                warmupSeconds = period;
-                            }
-                        }
-                    } else {
+                    String statsString = String.format(Locale.US,
+                            "%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, avg/last %.2f/%.2f kilobytes per sec, chain/common height %d/%d",
+                            blocksInLastSecond, txnsInLastSecond, origTxnsInLastSecond, average / 1024.0,
+                            bytesInLastSecond / 1024.0, chainHeight, mostCommonChainHeight);
+                    String thresholdString = String.format(Locale.US, "(threshold <%.2f KB/sec for %d seconds)",
+                            minSpeedBytesPerSec / 1024.0, samples.length);
+                    if (maxStalls <= 0) {
+                        log.info(statsString + ", stall disabled " + thresholdString);
+                    } else if (warmupSeconds > 0) {
                         warmupSeconds--;
                         if (bytesInLastSecond > 0)
-                            log.info(String.format(Locale.US, "%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, last %.2f kilobytes per sec",
-                                    blocksInLastSecond, txnsInLastSecond, origTxnsInLastSecond, bytesInLastSecond / 1024.0));
+                            log.info(statsString
+                                    + String.format(Locale.US, " (warming up %d more seconds)", warmupSeconds));
+                    } else if (average < minSpeedBytesPerSec) {
+                        log.info(statsString + ", STALLED " + thresholdString);
+                        maxStalls--;
+                        if (maxStalls == 0) {
+                            // We could consider starting to drop the Bloom filtering FP rate at this point, because
+                            // we tried a bunch of peers and no matter what we don't seem to be able to go any faster.
+                            // This implies we're bandwidth bottlenecked and might want to start using bandwidth
+                            // more effectively. Of course if there's a MITM that is deliberately throttling us,
+                            // this is a good way to make us take away all the FPs from our Bloom filters ... but
+                            // as they don't give us a whole lot of privacy either way that's not inherently a big
+                            // deal.
+                            log.warn("This network seems to be slower than the requested stall threshold - won't do stall disconnects any more.");
+                        } else {
+                            Peer peer = getDownloadPeer();
+                            log.warn(String.format(Locale.US,
+                                    "Chain download stalled: received %.2f KB/sec for %d seconds, require average of %.2f KB/sec, disconnecting %s, %d stalls left",
+                                    average / 1024.0, samples.length, minSpeedBytesPerSec / 1024.0, peer, maxStalls));
+                            peer.close();
+                            // Reset the sample buffer and give the next peer time to get going.
+                            samples = null;
+                            warmupSeconds = period;
+                        }
+                    } else {
+                        log.info(statsString + ", not stalled " + thresholdString);
                     }
                 }
                 blocksInLastSecond = 0;
@@ -1935,7 +1913,7 @@ public class PeerGroup implements TransactionBroadcaster {
     public List<Peer> findPeersOfAtLeastVersion(long protocolVersion) {
         lock.lock();
         try {
-            ArrayList<Peer> results = new ArrayList<Peer>(peers.size());
+            ArrayList<Peer> results = new ArrayList<>(peers.size());
             for (Peer peer : peers)
                 if (peer.getPeerVersionMessage().clientVersion >= protocolVersion)
                     results.add(peer);
@@ -1982,7 +1960,7 @@ public class PeerGroup implements TransactionBroadcaster {
     public List<Peer> findPeersWithServiceMask(int mask) {
         lock.lock();
         try {
-            ArrayList<Peer> results = new ArrayList<Peer>(peers.size());
+            ArrayList<Peer> results = new ArrayList<>(peers.size());
             for (Peer peer : peers)
                 if ((peer.getPeerVersionMessage().localServices & mask) == mask)
                     results.add(peer);
@@ -2058,7 +2036,7 @@ public class PeerGroup implements TransactionBroadcaster {
         // If we don't have a record of where this tx came from already, set it to be ourselves so Peer doesn't end up
         // redownloading it from the network redundantly.
         if (tx.getConfidence().getSource().equals(TransactionConfidence.Source.UNKNOWN)) {
-            log.info("Transaction source unknown, setting to SELF: {}", tx.getHashAsString());
+            log.info("Transaction source unknown, setting to SELF: {}", tx.getTxId());
             tx.getConfidence().setSource(TransactionConfidence.Source.SELF);
         }
         final TransactionBroadcast broadcast = new TransactionBroadcast(this, tx);
@@ -2090,7 +2068,7 @@ public class PeerGroup implements TransactionBroadcaster {
                 // This can happen if we get a reject message from a peer.
                 runningBroadcasts.remove(broadcast);
             }
-        });
+        }, MoreExecutors.directExecutor());
         // Keep a reference to the TransactionBroadcast object. This is important because otherwise, the entire tree
         // of objects we just created would become garbage if the user doesn't hold on to the returned future, and
         // eventually be collected. This in turn could result in the transaction not being committed to the wallet
@@ -2188,7 +2166,11 @@ public class PeerGroup implements TransactionBroadcaster {
         int mostCommonChainHeight = getMostCommonChainHeight(peers);
         List<Peer> candidates = new ArrayList<>();
         for (Peer peer : peers) {
-            if (peer.getBestHeight() == mostCommonChainHeight) candidates.add(peer);
+            if (!peer.getPeerVersionMessage().hasBlockChain())
+                continue;
+            if (peer.getBestHeight() < mostCommonChainHeight)
+                continue;
+            candidates.add(peer);
         }
         // Of the candidates, find the peers that meet the minimum protocol version we want to target. We could select
         // the highest version we've seen on the assumption that newer versions are always better but we don't want to
@@ -2207,6 +2189,8 @@ public class PeerGroup implements TransactionBroadcaster {
                 candidates2.add(peer);
             }
         }
+        if (candidates2.isEmpty())
+            return null;
         int index = (int) (Math.random() * candidates2.size());
         return candidates2.get(index);
     }

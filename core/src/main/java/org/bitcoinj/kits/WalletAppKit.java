@@ -25,6 +25,7 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.DeterministicKey;
 import org.bitcoinj.net.discovery.*;
 import org.bitcoinj.protocols.channels.*;
+import org.bitcoinj.script.Script;
 import org.bitcoinj.store.*;
 import org.bitcoinj.wallet.*;
 import org.slf4j.*;
@@ -63,8 +64,10 @@ import static com.google.common.base.Preconditions.*;
 public class WalletAppKit extends AbstractIdleService {
     protected static final Logger log = LoggerFactory.getLogger(WalletAppKit.class);
 
-    protected final String filePrefix;
     protected final NetworkParameters params;
+    protected final Script.ScriptType preferredOutputScriptType;
+    protected final KeyChainGroupStructure structure;
+    protected final String filePrefix;
     protected volatile BlockChain vChain;
     protected volatile BlockStore vStore;
     protected volatile Wallet vWallet;
@@ -91,15 +94,26 @@ public class WalletAppKit extends AbstractIdleService {
      * Creates a new WalletAppKit, with a newly created {@link Context}. Files will be stored in the given directory.
      */
     public WalletAppKit(NetworkParameters params, File directory, String filePrefix) {
-        this(new Context(params), directory, filePrefix);
+        this(new Context(params), Script.ScriptType.P2PKH, null, directory, filePrefix);
+    }
+
+    /**
+     * Creates a new WalletAppKit, with a newly created {@link Context}. Files will be stored in the given directory.
+     */
+    public WalletAppKit(NetworkParameters params, Script.ScriptType preferredOutputScriptType,
+            @Nullable KeyChainGroupStructure structure, File directory, String filePrefix) {
+        this(new Context(params), preferredOutputScriptType, structure, directory, filePrefix);
     }
 
     /**
      * Creates a new WalletAppKit, with the given {@link Context}. Files will be stored in the given directory.
      */
-    public WalletAppKit(Context context, File directory, String filePrefix) {
+    public WalletAppKit(Context context, Script.ScriptType preferredOutputScriptType,
+            @Nullable KeyChainGroupStructure structure, File directory, String filePrefix) {
         this.context = context;
         this.params = checkNotNull(context.getParams());
+        this.preferredOutputScriptType = checkNotNull(preferredOutputScriptType);
+        this.structure = structure != null ? structure : KeyChainGroupStructure.DEFAULT;
         this.directory = checkNotNull(directory);
         this.filePrefix = checkNotNull(filePrefix);
     }
@@ -303,7 +317,7 @@ public class WalletAppKit extends AbstractIdleService {
                             vStore.close();
                             if (!chainFile.delete())
                                 throw new IOException("Failed to delete chain file in preparation for restore.");
-                            vStore = new SPVBlockStore(params, chainFile);
+                            vStore = provideBlockStore(chainFile);
                         }
                     } else if (restoreFromKey != null) {
                         time = restoreFromKey.getCreationTimeSeconds();
@@ -312,7 +326,7 @@ public class WalletAppKit extends AbstractIdleService {
                             vStore.close();
                             if (!chainFile.delete())
                                 throw new IOException("Failed to delete chain file in preparation for restore.");
-                            vStore = new SPVBlockStore(params, chainFile);
+                            vStore = provideBlockStore(chainFile);
                         }
                     }
                     else
@@ -328,7 +342,7 @@ public class WalletAppKit extends AbstractIdleService {
                     vStore.close();
                     if (!chainFile.delete())
                         throw new IOException("Failed to delete chain file in preparation for restore.");
-                    vStore = new SPVBlockStore(params, chainFile);
+                    vStore = provideBlockStore(chainFile);
                 }
             }
             vChain = new BlockChain(params, vStore);
@@ -373,7 +387,7 @@ public class WalletAppKit extends AbstractIdleService {
                         throw new RuntimeException(t);
 
                     }
-                });
+                }, MoreExecutors.directExecutor());
             }
         } catch (BlockStoreException e) {
             throw new IOException(e);
@@ -434,23 +448,22 @@ public class WalletAppKit extends AbstractIdleService {
     }
 
     protected Wallet createWallet() {
-        KeyChainGroup kcg;
+        KeyChainGroup.Builder kcg = KeyChainGroup.builder(params, structure);
         if (restoreFromSeed != null)
-            kcg = new KeyChainGroup(params, restoreFromSeed);
+            kcg.fromSeed(restoreFromSeed, preferredOutputScriptType).build();
         else if (restoreFromKey != null)
-            kcg = new KeyChainGroup(params, restoreFromKey, false);
+            kcg.addChain(DeterministicKeyChain.builder().spend(restoreFromKey).outputScriptType(preferredOutputScriptType).build());
         else
-            kcg = new KeyChainGroup(params);
+            kcg.fromRandom(preferredOutputScriptType);
         if (walletFactory != null) {
-            return walletFactory.create(params, kcg);
+            return walletFactory.create(params, kcg.build());
         } else {
-            return new Wallet(params, kcg);  // default
+            return new Wallet(params, kcg.build()); // default
         }
     }
 
     private void maybeMoveOldWalletOutOfTheWay() {
-        if (restoreFromSeed == null) return;
-        if (restoreFromKey == null) return;
+        if (restoreFromSeed == null && restoreFromKey == null) return;
         if (!vWalletFile.exists()) return;
         int counter = 1;
         File newName;

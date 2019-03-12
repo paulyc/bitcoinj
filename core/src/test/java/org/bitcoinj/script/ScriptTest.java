@@ -80,7 +80,7 @@ public class ScriptTest {
         byte[] pubkeyBytes = HEX.decode(pubkeyProg);
         Script pubkey = new Script(pubkeyBytes);
         assertEquals("DUP HASH160 PUSHDATA(20)[33e81a941e64cda12c6a299ed322ddbdd03f8d0e] EQUALVERIFY CHECKSIG", pubkey.toString());
-        Address toAddr = LegacyAddress.fromPubKeyHash(TESTNET, ScriptPattern.extractHashFromPayToPubKeyHash(pubkey));
+        Address toAddr = LegacyAddress.fromPubKeyHash(TESTNET, ScriptPattern.extractHashFromP2PKH(pubkey));
         assertEquals("mkFQohBpy2HDXrCwyMrYL5RtfrmeiuuPY2", toAddr.toString());
     }
 
@@ -93,7 +93,7 @@ public class ScriptTest {
         List<ECKey> pubkeys = new ArrayList<>(3);
         for (ECKey key : keys) pubkeys.add(ECKey.fromPublicOnly(key.getPubKeyPoint()));
         assertEquals(script.getPubKeys(), pubkeys);
-        assertFalse(ScriptPattern.isSentToMultisig(ScriptBuilder.createOutputScript(new ECKey())));
+        assertFalse(ScriptPattern.isSentToMultisig(ScriptBuilder.createP2PKOutputScript(new ECKey())));
         try {
             // Fail if we ask for more signatures than keys.
             Script.createMultiSigOutputScript(4, keys);
@@ -113,14 +113,14 @@ public class ScriptTest {
     @Test
     public void testP2SHOutputScript() throws Exception {
         Address p2shAddress = LegacyAddress.fromBase58(MAINNET, "35b9vsyH1KoFT5a5KtrKusaCcPLkiSo1tU");
-        assertTrue(ScriptPattern.isPayToScriptHash(ScriptBuilder.createOutputScript(p2shAddress)));
+        assertTrue(ScriptPattern.isP2SH(ScriptBuilder.createOutputScript(p2shAddress)));
     }
 
     @Test
     public void testIp() throws Exception {
         byte[] bytes = HEX.decode("41043e96222332ea7848323c08116dddafbfa917b8e37f0bdf63841628267148588a09a43540942d58d49717ad3fabfe14978cf4f0a8b84d2435dad16e9aa4d7f935ac");
         Script s = new Script(bytes);
-        assertTrue(ScriptPattern.isPayToPubKey(s));
+        assertTrue(ScriptPattern.isP2PK(s));
     }
     
     @Test
@@ -440,18 +440,18 @@ public class ScriptTest {
         // pay to pubkey
         ECKey toKey = new ECKey();
         Address toAddress = LegacyAddress.fromKey(TESTNET, toKey);
-        assertEquals(toAddress, ScriptBuilder.createOutputScript(toKey).getToAddress(TESTNET, true));
+        assertEquals(toAddress, ScriptBuilder.createP2PKOutputScript(toKey).getToAddress(TESTNET, true));
         // pay to pubkey hash
         assertEquals(toAddress, ScriptBuilder.createOutputScript(toAddress).getToAddress(TESTNET, true));
         // pay to script hash
         Script p2shScript = ScriptBuilder.createP2SHOutputScript(new byte[20]);
         Address scriptAddress = LegacyAddress.fromScriptHash(TESTNET,
-                ScriptPattern.extractHashFromPayToScriptHash(p2shScript));
+                ScriptPattern.extractHashFromP2SH(p2shScript));
         assertEquals(scriptAddress, p2shScript.getToAddress(TESTNET, true));
     }
 
     @Test(expected = ScriptException.class)
     public void getToAddressNoPubKey() throws Exception {
-        ScriptBuilder.createOutputScript(new ECKey()).getToAddress(TESTNET, false);
+        ScriptBuilder.createP2PKOutputScript(new ECKey()).getToAddress(TESTNET, false);
     }
 }

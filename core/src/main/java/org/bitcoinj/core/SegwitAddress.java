@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Andreas Schildbach
+ * Copyright by the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,9 @@
 
 package org.bitcoinj.core;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+
 import java.io.ByteArrayOutputStream;
 
 import javax.annotation.Nullable;
@@ -23,8 +26,6 @@ import javax.annotation.Nullable;
 import org.bitcoinj.params.Networks;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.script.Script.ScriptType;
-
-import static com.google.common.base.Preconditions.checkState;
 
 /**
  * <p>Implementation of native segwit addresses. They are composed of two parts:</p>
@@ -202,6 +203,7 @@ public class SegwitAddress extends Address {
      * @return constructed address
      */
     public static SegwitAddress fromKey(NetworkParameters params, ECKey key) {
+        checkArgument(key.isCompressed(), "only compressed keys allowed");
         return fromHash(params, key.getPubKeyHash());
     }
 

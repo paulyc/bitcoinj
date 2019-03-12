@@ -35,7 +35,9 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
-import org.spongycastle.crypto.digests.RIPEMD160Digest;
+import org.bouncycastle.crypto.digests.RIPEMD160Digest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
@@ -68,6 +70,8 @@ public class Utils {
     public static final int MAX_INITIAL_ARRAY_LENGTH = 20;
 
     private static BlockingQueue<Boolean> mockSleepQueue;
+
+    private static final Logger log = LoggerFactory.getLogger(Utils.class);
 
     /**
      * <p>
@@ -546,24 +550,70 @@ public class Utils {
         return maxItem;
     }
 
-    private static int isAndroid = -1;
+    private enum Runtime {
+        ANDROID, OPENJDK, ORACLE_JAVA
+    }
+
+    private enum OS {
+        LINUX, WINDOWS, MAC_OS
+    }
+
+    private static Runtime runtime = null;
+    private static OS os = null;
+    static {
+        String runtimeProp = System.getProperty("java.runtime.name").toLowerCase(Locale.US);
+        if (runtimeProp == null)
+            runtime = null;
+        else if (runtimeProp.contains("android"))
+            runtime = Runtime.ANDROID;
+        else if (runtimeProp.contains("openjdk"))
+            runtime = Runtime.OPENJDK;
+        else if (runtimeProp.contains("java(tm) se"))
+            runtime = Runtime.ORACLE_JAVA;
+        else
+            log.info("Unknown java.runtime.name '{}'", runtimeProp);
+
+        String osProp = System.getProperty("os.name").toLowerCase(Locale.US);
+        if (osProp == null)
+            os = null;
+        else if (osProp.contains("linux"))
+            os = OS.LINUX;
+        else if (osProp.contains("win"))
+            os = OS.WINDOWS;
+        else if (osProp.contains("mac"))
+            os = OS.MAC_OS;
+        else
+            log.info("Unknown os.name '{}'", runtimeProp);
+    }
+
     public static boolean isAndroidRuntime() {
-        if (isAndroid == -1) {
-            final String runtime = System.getProperty("java.runtime.name");
-            isAndroid = (runtime != null && runtime.equals("Android Runtime")) ? 1 : 0;
-        }
-        return isAndroid == 1;
+        return runtime == Runtime.ANDROID;
+    }
+
+    public static boolean isOpenJDKRuntime() {
+        return runtime == Runtime.OPENJDK;
+    }
+
+    public static boolean isOracleJavaRuntime() {
+        return runtime == Runtime.ORACLE_JAVA;
     }
 
     public static boolean isLinux() {
-        return System.getProperty("os.name").toLowerCase().contains("linux");
+        return os == OS.LINUX;
     }
 
     public static boolean isWindows() {
-        return System.getProperty("os.name").toLowerCase().contains("win");
+        return os == OS.WINDOWS;
     }
 
     public static boolean isMac() {
-        return System.getProperty("os.name").toLowerCase().contains("mac");
+        return os == OS.MAC_OS;
+    }
+
+    public static String toString(List<byte[]> stack) {
+        List<String> parts = new ArrayList<>(stack.size());
+        for (byte[] push : stack)
+            parts.add('[' + HEX.encode(push) + ']');
+        return SPACE_JOINER.join(parts);
     }
 }

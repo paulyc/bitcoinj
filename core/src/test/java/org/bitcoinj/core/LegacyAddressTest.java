@@ -172,7 +172,7 @@ public class LegacyAddressTest {
         LegacyAddress b = LegacyAddress.fromScriptHash(TESTNET, HEX.decode("18a0e827269b5211eb51a4af1b2fa69333efa722"));
         assertEquals("2MuVSxtfivPKJe93EC1Tb9UhJtGhsoWEHCe", b.toString());
         LegacyAddress c = LegacyAddress.fromScriptHash(MAINNET,
-                ScriptPattern.extractHashFromPayToScriptHash(ScriptBuilder.createP2SHOutputScript(hex)));
+                ScriptPattern.extractHashFromP2SH(ScriptBuilder.createP2SHOutputScript(hex)));
         assertEquals("35b9vsyH1KoFT5a5KtrKusaCcPLkiSo1tU", c.toString());
     }
 
@@ -189,7 +189,7 @@ public class LegacyAddressTest {
         List<ECKey> keys = Arrays.asList(key1, key2, key3);
         Script p2shScript = ScriptBuilder.createP2SHOutputScript(2, keys);
         LegacyAddress address = LegacyAddress.fromScriptHash(MAINNET,
-                ScriptPattern.extractHashFromPayToScriptHash(p2shScript));
+                ScriptPattern.extractHashFromP2SH(p2shScript));
         assertEquals("3N25saC4dT24RphDAwLtD8LUN4E2gZPJke", address.toString());
     }
 
@@ -210,15 +210,6 @@ public class LegacyAddressTest {
 
     @Test
     public void comparisonCloneEqualTo() throws Exception {
-        LegacyAddress a = LegacyAddress.fromBase58(MAINNET, "1Dorian4RoXcnBv9hnQ4Y2C1an6NJ4UrjX");
-        LegacyAddress b = a.clone();
-
-        int result = a.compareTo(b);
-        assertEquals(0, result);
-    }
-
-    @Test
-    public void comparisonEqualTo() throws Exception {
         LegacyAddress a = LegacyAddress.fromBase58(MAINNET, "1Dorian4RoXcnBv9hnQ4Y2C1an6NJ4UrjX");
         LegacyAddress b = a.clone();
 

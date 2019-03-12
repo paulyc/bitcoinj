@@ -24,6 +24,8 @@ import org.bitcoinj.params.TestNet3Params;
 import org.bitcoinj.protocols.payments.PaymentProtocol;
 import org.bitcoinj.protocols.payments.PaymentProtocolException;
 import org.bitcoinj.protocols.payments.PaymentSession;
+import org.bitcoinj.script.Script;
+import org.bitcoinj.script.Script.ScriptType;
 import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.script.ScriptException;
 import org.bitcoinj.script.ScriptPattern;
@@ -31,11 +33,13 @@ import org.bitcoinj.store.*;
 import org.bitcoinj.uri.BitcoinURI;
 import org.bitcoinj.uri.BitcoinURIParseException;
 import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.wallet.DeterministicKeyChain;
 import org.bitcoinj.wallet.DeterministicSeed;
-import org.bitcoinj.wallet.DeterministicUpgradeRequiredException;
-import org.bitcoinj.wallet.DeterministicUpgradeRequiresPassword;
+
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
+import com.google.common.io.BaseEncoding;
 import com.google.common.io.Resources;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -64,6 +68,7 @@ import org.bitcoinj.core.NetworkParameters;
 import org.bitcoinj.core.Peer;
 import org.bitcoinj.core.PeerAddress;
 import org.bitcoinj.core.PeerGroup;
+import org.bitcoinj.core.SegwitAddress;
 import org.bitcoinj.core.Sha256Hash;
 import org.bitcoinj.core.StoredBlock;
 import org.bitcoinj.core.Transaction;
@@ -86,8 +91,7 @@ import org.bitcoinj.wallet.listeners.WalletCoinsSentEventListener;
 import org.bitcoinj.wallet.listeners.WalletReorganizeEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.crypto.params.KeyParameter;
-import org.spongycastle.util.encoders.Hex;
+import org.bouncycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
 import java.io.*;
@@ -115,11 +119,13 @@ import static com.google.common.base.Preconditions.checkNotNull;
  */
 public class WalletTool {
     private static final Logger log = LoggerFactory.getLogger(WalletTool.class);
+    private static final BaseEncoding HEX = BaseEncoding.base16().lowerCase();
 
     private static OptionSet options;
     private static OptionSpec<Date> dateFlag;
     private static OptionSpec<Long> unixtimeFlag;
     private static OptionSpec<String> seedFlag, watchFlag;
+    private static OptionSpec<Script.ScriptType> outputScriptTypeFlag;
     private static OptionSpec<String> xpubkeysFlag;
 
     private static NetworkParameters params;
@@ -132,7 +138,6 @@ public class WalletTool {
     private static ValidationMode mode;
     private static String password;
     private static org.bitcoin.protocols.payments.Protos.PaymentRequest paymentRequest;
-    private static OptionSpec<Integer> lookaheadSize;
 
     public static class Condition {
         public enum Type {
@@ -208,6 +213,7 @@ public class WalletTool {
         ENCRYPT,
         DECRYPT,
         MARRY,
+        UPGRADE,
         ROTATE,
         SET_CREATION_TIME,
     }
@@ -232,6 +238,8 @@ public class WalletTool {
         OptionSpec<String> walletFileName = parser.accepts("wallet").withRequiredArg().defaultsTo("wallet");
         seedFlag = parser.accepts("seed").withRequiredArg();
         watchFlag = parser.accepts("watchkey").withRequiredArg();
+        outputScriptTypeFlag = parser.accepts("output-script-type").withRequiredArg().ofType(Script.ScriptType.class)
+                .defaultsTo(Script.ScriptType.P2PKH);
         OptionSpec<NetworkEnum> netFlag = parser.accepts("net").withRequiredArg().ofType(NetworkEnum.class).defaultsTo(NetworkEnum.MAIN);
         dateFlag = parser.accepts("date").withRequiredArg().ofType(Date.class)
                 .withValuesConvertedBy(DateConverter.datePattern("yyyy/MM/dd"));
@@ -255,11 +263,11 @@ public class WalletTool {
         parser.accepts("allow-unconfirmed");
         parser.accepts("offline");
         parser.accepts("ignore-mandatory-extensions");
-        lookaheadSize = parser.accepts("lookahead-size").withRequiredArg().ofType(Integer.class);
         OptionSpec<String> passwordFlag = parser.accepts("password").withRequiredArg();
         OptionSpec<String> paymentRequestLocation = parser.accepts("payment-request").withRequiredArg();
         parser.accepts("no-pki");
         parser.accepts("dump-privkeys");
+        parser.accepts("dump-lookahead");
         OptionSpec<String> refundFlag = parser.accepts("refund-to").withRequiredArg();
         OptionSpec<String> txHashFlag = parser.accepts("txhash").withRequiredArg();
         options = parser.parse(args);
@@ -272,7 +280,7 @@ public class WalletTool {
 
         ActionEnum action;
         try {
-            String actionStr = options.nonOptionArguments().get(0);
+            String actionStr = (String) options.nonOptionArguments().get(0);
             actionStr = actionStr.toUpperCase().replace("-", "_");
             action = ActionEnum.valueOf(actionStr);
         } catch (IllegalArgumentException e) {
@@ -477,6 +485,7 @@ public class WalletTool {
             case ENCRYPT: encrypt(); break;
             case DECRYPT: decrypt(); break;
             case MARRY: marry(); break;
+            case UPGRADE: upgrade(); break;
             case ROTATE: rotate(); break;
             case SET_CREATION_TIME: setCreationTime(); break;
         }
@@ -550,6 +559,27 @@ public class WalletTool {
                 .followingKeys(keys.build())
                 .build();
         wallet.addAndActivateHDChain(chain);
+    }
+
+    private static void upgrade() {
+        DeterministicKeyChain activeKeyChain = wallet.getActiveKeyChain();
+        ScriptType currentOutputScriptType = activeKeyChain != null ? activeKeyChain.getOutputScriptType() : null;
+        ScriptType outputScriptType = options.valueOf(outputScriptTypeFlag);
+        if (!wallet.isDeterministicUpgradeRequired(outputScriptType)) {
+            System.err
+                    .println("No upgrade from " + (currentOutputScriptType != null ? currentOutputScriptType : "basic")
+                            + " to " + outputScriptType);
+            return;
+        }
+        KeyParameter aesKey = null;
+        if (wallet.isEncrypted()) {
+            aesKey = passwordToKey(true);
+            if (aesKey == null)
+                return;
+        }
+        wallet.upgradeToDeterministic(outputScriptType, aesKey);
+        System.out.println("Upgraded from " + (currentOutputScriptType != null ? currentOutputScriptType : "basic")
+                + " to " + outputScriptType);
     }
 
     private static void rotate() throws BlockStoreException {
@@ -674,7 +704,7 @@ public class WalletTool {
                 throw new RuntimeException(e);
             }
             t = req.tx;   // Not strictly required today.
-            System.out.println(t.getHashAsString());
+            System.out.println(t.getTxId());
             if (options.has("offline")) {
                 wallet.commitTx(t);
                 return;
@@ -791,7 +821,7 @@ public class WalletTool {
             }
             wallet.completeTx(req);
 
-            System.out.println(req.tx.getHashAsString());
+            System.out.println(req.tx.getTxId());
             if (options.has("offline")) {
                 wallet.commitTx(req.tx);
                 return;
@@ -897,7 +927,7 @@ public class WalletTool {
                     req.tx.calculateSignature(0, key2, lockTimeVerifyOutput.getScriptPubKey(), Transaction.SigHash.SINGLE, false);
             input.setScriptSig(ScriptBuilder.createCLTVPaymentChannelInput(sig1, sig2));
 
-            System.out.println(req.tx.getHashAsString());
+            System.out.println(req.tx.getTxId());
             if (options.has("offline")) {
                 wallet.commitTx(req.tx);
                 return;
@@ -1000,7 +1030,7 @@ public class WalletTool {
                     req.tx.calculateSignature(0, key, lockTimeVerifyOutput.getScriptPubKey(), Transaction.SigHash.SINGLE, false);
             input.setScriptSig(ScriptBuilder.createCLTVPaymentChannelRefund(sig));
 
-            System.out.println(req.tx.getHashAsString());
+            System.out.println(req.tx.getTxId());
             if (options.has("offline")) {
                 wallet.commitTx(req.tx);
                 return;
@@ -1161,7 +1191,7 @@ public class WalletTool {
                     @Override
                     public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                         // Runs in a peer thread.
-                        System.out.println(tx.getHashAsString());
+                        System.out.println(tx.getTxId());
                         latch.countDown();  // Wake up main thread.
                     }
                 });
@@ -1169,7 +1199,7 @@ public class WalletTool {
                     @Override
                     public void onCoinsSent(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                         // Runs in a peer thread.
-                        System.out.println(tx.getHashAsString());
+                        System.out.println(tx.getTxId());
                         latch.countDown();  // Wake up main thread.
                     }
                 });
@@ -1229,7 +1259,6 @@ public class WalletTool {
         }
         if (mode == ValidationMode.SPV) {
             store = new SPVBlockStore(params, chainFileName);
-            chain = new BlockChain(params, wallet, store);
             if (reset) {
                 try {
                     CheckpointManager.checkpoint(params, CheckpointManager.openStream(params), store,
@@ -1241,10 +1270,10 @@ public class WalletTool {
                     System.out.println("Could not load checkpoints: " + x.getMessage());
                 }
             }
+            chain = new BlockChain(params, wallet, store);
         } else if (mode == ValidationMode.FULL) {
-            FullPrunedBlockStore s = new H2FullPrunedBlockStore(params, chainFileName.getAbsolutePath(), 5000);
-            store = s;
-            chain = new FullPrunedBlockChain(params, wallet, s);
+            store = new H2FullPrunedBlockStore(params, chainFileName.getAbsolutePath(), 5000);
+            chain = new FullPrunedBlockChain(params, wallet, (FullPrunedBlockStore) store);
         }
         // This will ensure the wallet is saved when it changes.
         wallet.autosaveToFile(walletFile, 5, TimeUnit.SECONDS, null);
@@ -1266,6 +1295,8 @@ public class WalletTool {
                     System.exit(1);
                 }
             }
+        } else {
+            peerGroup.setRequiredServices(0);
         }
     }
 
@@ -1311,13 +1342,15 @@ public class WalletTool {
             return;
         }
         long creationTimeSecs = getCreationTimeSeconds();
+        ScriptType outputScriptType = options.valueOf(outputScriptTypeFlag);
         if (creationTimeSecs == 0)
             creationTimeSecs = MnemonicCode.BIP39_STANDARDISATION_TIME_SECS;
         if (options.has(seedFlag)) {
             String seedStr = options.valueOf(seedFlag);
             DeterministicSeed seed;
             // Parse as mnemonic code.
-            final List<String> split = ImmutableList.copyOf(Splitter.on(" ").omitEmptyStrings().split(seedStr));
+            final List<String> split = ImmutableList
+                    .copyOf(Splitter.on(CharMatcher.anyOf(" :;,")).omitEmptyStrings().split(seedStr));
             String passphrase = ""; // TODO allow user to specify a passphrase
             seed = new DeterministicSeed(split, null, passphrase, creationTimeSecs);
             try {
@@ -1335,11 +1368,11 @@ public class WalletTool {
                 // not reached - all subclasses handled above
                 throw new RuntimeException(e);
             }
-            wallet = Wallet.fromSeed(params, seed);
+            wallet = Wallet.fromSeed(params, seed, outputScriptType);
         } else if (options.has(watchFlag)) {
             wallet = Wallet.fromWatchingKeyB58(params, options.valueOf(watchFlag), creationTimeSecs);
         } else {
-            wallet = new Wallet(params);
+            wallet = Wallet.createDeterministic(params, outputScriptType);
         }
         if (password != null)
             wallet.encrypt(password);
@@ -1358,30 +1391,57 @@ public class WalletTool {
     }
 
     private static void addKey() {
-        // If we're being given precise details, we have to import the key.
-        if (options.has("privkey") || options.has("pubkey")) {
-            importKey();
-        } else {
-            if (options.has(lookaheadSize)) {
-                Integer size = options.valueOf(lookaheadSize);
-                log.info("Setting keychain lookahead size to {}", size);
-                wallet.setKeyChainGroupLookaheadSize(size);
-            }
-            ECKey key;
+        ECKey key;
+        long creationTimeSeconds = getCreationTimeSeconds();
+        if (options.has("privkey")) {
+            String data = (String) options.valueOf("privkey");
             try {
-                key = wallet.freshReceiveKey();
-            } catch (DeterministicUpgradeRequiredException e) {
-                try {
-                    KeyParameter aesKey = passwordToKey(false);
-                    wallet.upgradeToDeterministic(aesKey);
-                } catch (DeterministicUpgradeRequiresPassword e2) {
-                    System.err.println("This wallet must be upgraded to be deterministic, but it's encrypted: please supply the password and try again.");
+                DumpedPrivateKey dpk = DumpedPrivateKey.fromBase58(params, data); // WIF
+                key = dpk.getKey();
+            } catch (AddressFormatException e) {
+                byte[] decode = parseAsHexOrBase58(data);
+                if (decode == null) {
+                    System.err.println("Could not understand --privkey as either WIF, hex or base58: " + data);
                     return;
                 }
-                key = wallet.freshReceiveKey();
+                key = ECKey.fromPrivate(new BigInteger(1, decode));
             }
-            System.out.println(LegacyAddress.fromKey(params, key) + " " + key);
+            if (options.has("pubkey")) {
+                // Give the user a hint.
+                System.out.println("You don't have to specify --pubkey when a private key is supplied.");
+            }
+            key.setCreationTimeSeconds(creationTimeSeconds);
+        } else if (options.has("pubkey")) {
+            byte[] pubkey = parseAsHexOrBase58((String) options.valueOf("pubkey"));
+            key = ECKey.fromPublicOnly(pubkey);
+            key.setCreationTimeSeconds(creationTimeSeconds);
+        } else {
+            System.err.println("Either --privkey or --pubkey must be specified.");
+            return;
         }
+        if (wallet.hasKey(key)) {
+            System.err.println("That key already exists in this wallet.");
+            return;
+        }
+        try {
+            if (wallet.isEncrypted()) {
+                KeyParameter aesKey = passwordToKey(true);
+                if (aesKey == null)
+                    return;   // Error message already printed.
+                key = key.encrypt(checkNotNull(wallet.getKeyCrypter()), aesKey);
+            }
+        } catch (KeyCrypterException kce) {
+            System.err.println("There was an encryption related error when adding the key. The error was '"
+                    + kce.getMessage() + "'.");
+            return;
+        }
+        if (!key.isCompressed())
+            System.out.println("WARNING: Importing an uncompressed key");
+        wallet.importKey(key);
+        System.out.print("Addresses: " + LegacyAddress.fromKey(params, key));
+        if (key.isCompressed())
+            System.out.print("," + SegwitAddress.fromKey(params, key));
+        System.out.println();
     }
 
     @Nullable
@@ -1397,58 +1457,6 @@ public class WalletTool {
             return null;
         }
         return checkNotNull(wallet.getKeyCrypter()).deriveKey(password);
-    }
-
-    private static void importKey() {
-        ECKey key;
-        long creationTimeSeconds = getCreationTimeSeconds();
-        if (options.has("privkey")) {
-            String data = (String) options.valueOf("privkey");
-            if (data.startsWith("5J") || data.startsWith("5H") || data.startsWith("5K")) {
-                DumpedPrivateKey dpk;
-                try {
-                    dpk = DumpedPrivateKey.fromBase58(params, data);
-                } catch (AddressFormatException e) {
-                    System.err.println("Could not parse dumped private key " + data);
-                    return;
-                }
-                key = dpk.getKey();
-            } else {
-                byte[] decode = parseAsHexOrBase58(data);
-                if (decode == null) {
-                    System.err.println("Could not understand --privkey as either hex or base58: " + data);
-                    return;
-                }
-                key = ECKey.fromPrivate(new BigInteger(1, decode));
-            }
-            if (options.has("pubkey")) {
-                // Give the user a hint.
-                System.out.println("You don't have to specify --pubkey when a private key is supplied.");
-            }
-            key.setCreationTimeSeconds(creationTimeSeconds);
-        } else if (options.has("pubkey")) {
-            byte[] pubkey = parseAsHexOrBase58((String) options.valueOf("pubkey"));
-            key = ECKey.fromPublicOnly(pubkey);
-            key.setCreationTimeSeconds(creationTimeSeconds);
-        } else {
-            throw new IllegalStateException();
-        }
-        if (wallet.findKeyFromPubKey(key.getPubKey()) != null) {
-            System.err.println("That key already exists in this wallet.");
-            return;
-        }
-        try {
-            if (wallet.isEncrypted()) {
-                KeyParameter aesKey = passwordToKey(true);
-                if (aesKey == null)
-                    return;   // Error message already printed.
-                key = key.encrypt(checkNotNull(wallet.getKeyCrypter()), aesKey);
-            }
-            wallet.importKey(key);
-            System.out.println(LegacyAddress.fromKey(params, key) + " " + key);
-        } catch (KeyCrypterException kce) {
-            System.err.println("There was an encryption related error when adding the key. The error was '" + kce.getMessage() + "'.");
-        }
     }
 
     /**
@@ -1478,19 +1486,19 @@ public class WalletTool {
     }
 
     private static void deleteKey() {
-        String pubkey = (String) options.valueOf("pubkey");
+        String pubKey = (String) options.valueOf("pubkey");
         String addr = (String) options.valueOf("addr");
-        if (pubkey == null && addr == null) {
+        if (pubKey == null && addr == null) {
             System.err.println("One of --pubkey or --addr must be specified.");
             return;
         }
         ECKey key = null;
-        if (pubkey != null) {
-            key = wallet.findKeyFromPubKey(Hex.decode(pubkey));
+        if (pubKey != null) {
+            key = wallet.findKeyFromPubKey(HEX.decode(pubKey));
         } else {
             try {
-                Address address = LegacyAddress.fromBase58(wallet.getParams(), addr);
-                key = wallet.findKeyFromPubHash(address.getHash());
+                Address address = Address.fromString(wallet.getParams(), addr);
+                key = wallet.findKeyFromAddress(address);
             } catch (AddressFormatException e) {
                 System.err.println(addr + " does not parse as a Bitcoin address of the right network parameters.");
                 return;
@@ -1500,12 +1508,16 @@ public class WalletTool {
             System.err.println("Wallet does not seem to contain that key.");
             return;
         }
-        wallet.removeKey(key);
+        boolean removed = wallet.removeKey(key);
+        if (removed)
+            System.out.println("Key " + key + " was removed");
+        else
+            System.err.println("Key " + key + " could not be removed");
     }
 
     private static void currentReceiveAddr() {
-        ECKey key = wallet.currentReceiveKey();
-        System.out.println(LegacyAddress.fromKey(params, key) + " " + key);
+        Address address = wallet.currentReceiveAddress();
+        System.out.println(address);
     }
 
     private static void dumpWallet() throws BlockStoreException {
@@ -1515,33 +1527,35 @@ public class WalletTool {
             setup();
 
         final boolean dumpPrivkeys = options.has("dump-privkeys");
+        final boolean dumpLookahead = options.has("dump-lookahead");
         if (dumpPrivkeys && wallet.isEncrypted()) {
             if (password != null) {
                 final KeyParameter aesKey = passwordToKey(true);
                 if (aesKey == null)
                     return; // Error message already printed.
-                System.out.println(wallet.toString(true, aesKey, true, true, chain));
+                System.out.println(wallet.toString(dumpLookahead, true, aesKey, true, true, chain));
             } else {
                 System.err.println("Can't dump privkeys, wallet is encrypted.");
                 return;
             }
         } else {
-            System.out.println(wallet.toString(dumpPrivkeys, null, true, true, chain));
+            System.out.println(wallet.toString(dumpLookahead, dumpPrivkeys, null, true, true, chain));
         }
     }
 
     private static void setCreationTime() {
-        DeterministicSeed seed = wallet.getActiveKeyChain().getSeed();
-        if (seed == null) {
-            System.err.println("Active chain does not have a seed.");
-            return;
-        }
         long creationTime = getCreationTimeSeconds();
+        for (DeterministicKeyChain chain : wallet.getActiveKeyChains()) {
+            DeterministicSeed seed = chain.getSeed();
+            if (seed == null)
+                System.out.println("Active chain does not have a seed: " + chain);
+            else
+                seed.setCreationTimeSeconds(creationTime);
+        }
         if (creationTime > 0)
             System.out.println("Setting creation time to: " + Utils.dateTimeFormat(creationTime * 1000));
         else
             System.out.println("Clearing creation time.");
-        seed.setCreationTimeSeconds(creationTime);
     }
 
     static synchronized void onChange(final CountDownLatch latch) {
